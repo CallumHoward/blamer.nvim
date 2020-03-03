@@ -89,7 +89,11 @@ function! blamer#GetMessage(file, line_number, line_count) abort
     let l:property = l:words[0]
     let l:value = join(l:words[1:], ' ')
     if  l:property =~? 'time'
-      let l:value = strftime(s:blamer_date_format, l:value)
+      if l:info['commit-long'] ==# '0000000000000000000000000000000000000000'
+        let l:value = ''
+      else
+        let l:value = systemlist('git --no-pager show ' . l:info['commit-long'] . ' --format="%ar"')[0] . ' '
+      endif
     endif
     let l:value = escape(l:value, '&')
     let l:value = escape(l:value, '~')
