@@ -22,9 +22,45 @@ endif
 let s:blamer_delay = get(g:, 'blamer_delay', 1000)
 let s:blamer_show_in_visual_modes = get(g:, 'blamer_show_in_visual_modes', 1)
 let s:blamer_timer_id = -1
+let s:blamer_relative_time = get(g:, 'blamer_relative_time', 0)
 
 let s:is_windows = has('win16') || has('win32') || has('win64') || has('win95')
 let s:missing_popup_feature = !has('nvim') && !exists('*popup_create')
+
+function! s:GetRelativeTime(commit_timestamp) abort
+  let l:current_timestamp = localtime()
+  let l:elapsed = l:current_timestamp - a:commit_timestamp
+
+  let l:minute_seconds = 60
+  let l:hour_seconds = l:minute_seconds * 60
+  let l:day_seconds = l:hour_seconds * 24
+  let l:month_seconds = l:day_seconds * 30
+  let l:year_seconds = l:month_seconds * 12
+
+  " We have no info how long ago line saved
+  if(l:elapsed == 0)
+    return 'a while ago'
+  endif
+
+  let l:ToPlural = {word,number -> number > 1 ? word . 's' : word}
+  let l:ToRelativeString = {time,divisor,time_word -> string(float2nr(round(time / divisor))) . l:ToPlural(' ' . time_word, float2nr(round(time / divisor))) . ' ago'}
+
+
+  if l:elapsed < l:minute_seconds
+    return l:ToRelativeString(l:elapsed,1,'second')
+  elseif l:elapsed < l:hour_seconds
+    return l:ToRelativeString(l:elapsed,60,'minute')
+  elseif l:elapsed < l:day_seconds
+    return l:ToRelativeString(l:elapsed,l:hour_seconds,'hour')
+  elseif l:elapsed < l:month_seconds
+    return l:ToRelativeString(l:elapsed,l:day_seconds,'day')
+  elseif l:elapsed < l:year_seconds
+    return l:ToRelativeString(l:elapsed,l:month_seconds,'month')
+  else
+    return l:ToRelativeString(l:elapsed,l:year_seconds,'year')
+  endif
+
+endfunction
 
 function! s:Head(array) abort
   if len(a:array) == 0
@@ -59,10 +95,21 @@ function! blamer#GetMessage(file, line_number, line_count) abort
   let l:command = 'git --no-pager blame -p -L ' . a:line_number . ',' . a:line_count . ' -- ' . a:file
   let l:result = system(l:command)
 
-  if l:result =~? 'fatal'
-    if l:result =~? 'not a git repository'
+  let l:lines = split(l:result, '\n')
+  let l:info = {}
+  let l:info['commit-short'] = split(l:lines[0], ' ')[0][:7]
+  let l:info['commit-long'] = split(l:lines[0], ' ')[0]
+  let l:hash_is_empty = empty(matchstr(info['commit-long'],'\c[0-9a-f]\{40}'))
+
+  if l:hash_is_empty
+    if l:result =~? 'fatal' && l:result =~? 'not a git repository'
       let g:blamer_enabled = 0
       echo '[blamer.nvim] Not a git repository'
+      return ''
+    endif
+
+    " Known git errors will be silenced
+    if l:result =~? 'no matches found'
       return ''
     elseif l:result =~? 'no such path'
       return ''
@@ -70,20 +117,13 @@ function! blamer#GetMessage(file, line_number, line_count) abort
       return ''
     elseif l:result =~? 'has only' && l:result =~? 'lines'
       return ''
-    else
-      echo '[blamer.nvim] ' . l:result
-      return ''
     endif
-  endif
 
-  if l:result =~? 'no matches found'
+    " Echo unkown errors in order to catch them
+    echo '[blamer.nvim] ' . l:result
     return ''
   endif
 
-  let l:lines = split(l:result, '\n')
-  let l:info = {}
-  let l:info['commit-short'] = split(l:lines[0], ' ')[0][:7]
-  let l:info['commit-long'] = split(l:lines[0], ' ')[0]
   for line in l:lines[1:]
     let l:words = split(line, ' ')
     let l:property = l:words[0]
@@ -93,6 +133,10 @@ function! blamer#GetMessage(file, line_number, line_count) abort
         let l:value = ''
       else
         let l:value = systemlist('git --no-pager show ' . l:info['commit-long'] . ' --format="%ar"')[0] . ' '
+      if(s:blamer_relative_time)
+        let l:value = s:GetRelativeTime(l:value)
+      else
+        let l:value = strftime(s:blamer_date_format, l:value)
       endif
     endif
     let l:value = escape(l:value, '&')
@@ -155,6 +199,11 @@ endfunction
 
 function! blamer#Show() abort
   if g:blamer_enabled == 0 || s:missing_popup_feature
+    return
+  endif
+
+  let l:is_buffer_special = &buftype != '' ? 1 : 0
+  if is_buffer_special
     return
   endif
 
